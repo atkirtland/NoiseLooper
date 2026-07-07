@@ -21,6 +21,12 @@
     <string name="settings_label">Settings</string>
     <string name="credits_label">Credits</string>
 
+    <string name="notification_channel_playback">Playback</string>
+    <string name="notification_playing">Playing</string>
+    <string name="notification_paused">Paused</string>
+    <string name="notification_action_play">Play</string>
+    <string name="notification_action_pause">Pause</string>
+
 
     <string name="header_antisound">Anti Sound</string>
     <string name="header_nature">Nature</string>

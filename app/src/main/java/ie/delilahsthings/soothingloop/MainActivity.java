@@ -1,13 +1,18 @@
 package ie.delilahsthings.soothingloop;
 
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.Toolbar;
+import androidx.core.content.ContextCompat;
 
+import android.Manifest;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.content.res.Resources;
 import android.media.AudioManager;
 import android.os.Build;
@@ -45,12 +50,14 @@ import javax.xml.parsers.ParserConfigurationException;
 
 public class MainActivity extends AppCompatActivity {
 
-    private Bundle pausedSounds = new Bundle();
+    private Bundle noiseListSnapshot = new Bundle();
     private LinearLayout[] noise_lists;
     private LinearLayout stock_noise_list;
     private LinearLayout custom_noise_list;
     private Resources resources;
     private SharedPreferences settings;
+    private final ActivityResultLauncher<String> notificationPermissionLauncher =
+            registerForActivityResult(new ActivityResultContracts.RequestPermission(), granted -> {});
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -300,12 +307,13 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void onPlaySounds() {
+        requestNotificationPermissionIfNeeded();
+
         Toolbar mainToolbar = findViewById(R.id.main_toolbar);
         Menu mainMenu = mainToolbar.getMenu();
         MenuItem playPauseButton;
         try {
             playPauseButton = mainMenu.findItem(R.id.play_pause_button);
-            pausedSounds.putBoolean(Constants.ANY_PLAYING, true);
             playPauseButton.setVisible(true);
             playPauseButton.setIcon(R.drawable.pause);
             playPauseButton.setTitle(R.string.pause_button_label);
@@ -314,20 +322,40 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    private void requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT >= 33 &&
+                ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS);
+        }
+    }
+
     public void playPause(MenuItem sender)
     {
-        if(pausedSounds.getBoolean(Constants.ANY_PLAYING,true)) {
+        if(SoundEffectVolumeManager.isAnythingPlaying()) {
             silenceAll(sender);
-            sender.setIcon(R.drawable.play_triangle);
-            sender.setTitle(R.string.resume_button_label);
-            pausedSounds.putBoolean(Constants.ANY_PLAYING,false);
         }
-
         else {
-            loadState(pausedSounds);
+            SoundEffectVolumeManager.resumeAll();
+            syncSeekBarsToManagerState();
             sender.setIcon(R.drawable.pause);
             sender.setTitle(R.string.pause_button_label);
-            pausedSounds.putBoolean(Constants.ANY_PLAYING,true);
+        }
+    }
+
+    /** Resyncs every SeekBar's displayed progress to match SoundEffectVolumeManager's actual playback state. */
+    private void syncSeekBarsToManagerState()
+    {
+        SeekBar v;
+        String persistKey;
+
+        for(LinearLayout noise_list: noise_lists) {
+            for (int i = 0; i < noise_list.getChildCount(); i++) {
+                v = noise_list.getChildAt(i).findViewById(R.id.volume);
+                if (v != null) {
+                    persistKey = (String) v.getTag(R.string.persist_key);
+                    v.setProgress(SoundEffectVolumeManager.getVolumePercent(persistKey));
+                }
+            }
         }
     }
 
@@ -419,7 +447,7 @@ public class MainActivity extends AppCompatActivity {
                 boolean restoreVolumes = intent.getBooleanExtra(Constants.RESTORE_VOLUMES,false);
 
                 if(restoreVolumes)
-                    saveState(pausedSounds);
+                    saveState(noiseListSnapshot);
 
                 populateNoiselist();
                 populateCustomNoiselist();
@@ -427,7 +455,7 @@ public class MainActivity extends AppCompatActivity {
                 if(noise_to_remove!=null)
                     SoundEffectVolumeManager.unload(CustomSoundsManager.getSoundPath()+noise_to_remove);
                 if(restoreVolumes)
-                    loadState(pausedSounds);
+                    loadState(noiseListSnapshot);
             }
         };
 
@@ -447,12 +475,22 @@ public class MainActivity extends AppCompatActivity {
             }
         };
 
+        //playback paused/resumed/stopped remotely (notification, lock screen, Bluetooth)
+        BroadcastReceiver onPlaybackStateChanged=new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                invalidateOptionsMenu();
+                syncSeekBarsToManagerState();
+            }
+        };
+
         if (Build.VERSION.SDK_INT >= 26) {
             registerReceiver(fadeoutEvent, new IntentFilter(Constants.FADEOUT_ACTION), Context.RECEIVER_NOT_EXPORTED);
             registerReceiver(sleepTimerEvent, new IntentFilter(Constants.TIMER_EVENT), Context.RECEIVER_NOT_EXPORTED);
             registerReceiver(onNoiseListChange,new IntentFilter(Constants.INVALIDATE_ACTION), Context.RECEIVER_NOT_EXPORTED);
             registerReceiver(onProfileAddedOrRemoved,new IntentFilter(Constants.INVALIDATE_PROFILES), Context.RECEIVER_NOT_EXPORTED);
             registerReceiver(onAudioDeviceChange,new IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY), Context.RECEIVER_EXPORTED);
+            registerReceiver(onPlaybackStateChanged,new IntentFilter(Constants.PLAYBACK_STATE_CHANGED), Context.RECEIVER_NOT_EXPORTED);
         }
         else
         {
@@ -461,6 +499,7 @@ public class MainActivity extends AppCompatActivity {
             registerReceiver(onNoiseListChange,new IntentFilter(Constants.INVALIDATE_ACTION));
             registerReceiver(onProfileAddedOrRemoved,new IntentFilter(Constants.INVALIDATE_PROFILES));
             registerReceiver(onAudioDeviceChange,new IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY));
+            registerReceiver(onPlaybackStateChanged,new IntentFilter(Constants.PLAYBACK_STATE_CHANGED));
         }
     }
 
@@ -496,30 +535,23 @@ public class MainActivity extends AppCompatActivity {
     {
         SeekBar v;
         String persistKey;
-        int volume;
-        boolean anyPlaying=false;
 
         for(LinearLayout noise_list: noise_lists) {
             for (int i = 0; i < noise_list.getChildCount(); i++) {
                 v = noise_list.getChildAt(i).findViewById(R.id.volume);
                 if (v != null) {
                     persistKey = (String) v.getTag(R.string.persist_key);
-                    volume=v.getProgress();
-                    state.putInt(persistKey, volume);
-                    if(volume!=0)
-                        anyPlaying=true;
+                    state.putInt(persistKey, v.getProgress());
                 }
             }
         }
-
-        state.putBoolean(Constants.ANY_PLAYING,anyPlaying);
     }
 
     void setPauseVisibility(MenuItem playPauseButton)
     {
         playPauseButton.setVisible(SoundEffectVolumeManager.EVER_PLAYED);
 
-        if(pausedSounds.getBoolean(Constants.ANY_PLAYING,true))
+        if(SoundEffectVolumeManager.isAnythingPlaying())
         {
             playPauseButton.setTitle(R.string.pause_button_label);
             playPauseButton.setIcon(R.drawable.pause);
@@ -564,14 +596,13 @@ public class MainActivity extends AppCompatActivity {
     }
     public void silenceAll(MenuItem playPauseButton)
     {
-        if(pausedSounds.getBoolean(Constants.ANY_PLAYING,true)) {
-            saveState(pausedSounds);
+        boolean wasPlaying = SoundEffectVolumeManager.isAnythingPlaying();
+        SoundEffectVolumeManager.pauseAll();
+
+        if(wasPlaying) {
             playPauseButton.setIcon(R.drawable.play_triangle);
             playPauseButton.setTitle(R.string.resume_button_label);
-            pausedSounds.putBoolean(Constants.ANY_PLAYING, false);
         }
-
-        SoundEffectVolumeManager.stopAll();
 
         SeekBar v;
         for(LinearLayout noise_list: noise_lists) {
@@ -591,11 +622,9 @@ public class MainActivity extends AppCompatActivity {
         MenuItem playPauseButton;
         try {
             playPauseButton = mainMenu.findItem(R.id.play_pause_button);
-            if(pausedSounds.getBoolean(Constants.ANY_PLAYING,true)) {
-                saveState(pausedSounds);
+            if(SoundEffectVolumeManager.isAnythingPlaying()) {
                 playPauseButton.setIcon(R.drawable.play_triangle);
                 playPauseButton.setTitle(R.string.resume_button_label);
-                pausedSounds.putBoolean(Constants.ANY_PLAYING, false);
             }
         }
         catch (NullPointerException e) {

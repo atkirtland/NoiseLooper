@@ -13,7 +13,7 @@ public class SoundEffectVolumeManager implements SeekBar.OnSeekBarChangeListener
 
     final static int MAX_STREAMS=32;
     private int playbackId=0;
-    private float volumeF, fadeStart;
+    private float volumeF, fadeStart, pausedVolumeF;
     private int soundPoolIndex;
 
     private static Runnable onPlayCallback;
@@ -51,11 +51,26 @@ public class SoundEffectVolumeManager implements SeekBar.OnSeekBarChangeListener
         }
     }
 
+    private static SoundEffectVolumeManager lookup(String persistKey) {
+        if(persistKey==null) {
+            return null;
+        }
+        if(cache.containsKey(persistKey)) {
+            return cache.get(persistKey);
+        }
+        if(persistKey.startsWith(Constants.CUSTOM_NOISE_PREFIX)) {
+            String path = CustomSoundsManager.getSoundPath()+persistKey.substring(Constants.CUSTOM_NOISE_PREFIX.length());
+            return cache.get(path);
+        }
+        return null;
+    }
+
     public static void unload(String sound) {
         SoundEffectVolumeManager manager = cache.get(sound);
         soundPool.stop(manager.playbackId);
         soundPool.unload(manager.soundPoolIndex);
         cache.remove(sound);
+        PlaybackService.sync(StaticContext.getAppContext());
     }
 
     public static void stopAll()
@@ -69,7 +84,73 @@ public class SoundEffectVolumeManager implements SeekBar.OnSeekBarChangeListener
                 soundPool.stop(manager.playbackId);
                 manager.playbackId=0;
             }
+            manager.pausedVolumeF=0;
         }
+
+        PlaybackService.sync(StaticContext.getAppContext());
+    }
+
+    /** Stops every currently-playing sound but remembers its volume so {@link #resumeAll()} can restore it. */
+    public static void pauseAll()
+    {
+        abortFadeout();
+
+        for(SoundEffectVolumeManager manager: cache.values())
+        {
+            if(manager.playbackId!=0)
+            {
+                manager.pausedVolumeF=manager.volumeF;
+                soundPool.stop(manager.playbackId);
+                manager.playbackId=0;
+            }
+        }
+
+        PlaybackService.sync(StaticContext.getAppContext());
+    }
+
+    /** Replays every sound that was stopped by {@link #pauseAll()} at its previous volume. */
+    public static void resumeAll()
+    {
+        for(SoundEffectVolumeManager manager: cache.values())
+        {
+            if(manager.playbackId==0 && manager.pausedVolumeF>0)
+            {
+                float volume=manager.pausedVolumeF;
+                manager.pausedVolumeF=0;
+                manager.startPlayback(volume);
+            }
+        }
+
+        PlaybackService.sync(StaticContext.getAppContext());
+    }
+
+    public static boolean isAnythingPlaying()
+    {
+        for(SoundEffectVolumeManager manager: cache.values())
+        {
+            if(manager.playbackId!=0)
+                return true;
+        }
+        return false;
+    }
+
+    public static boolean isAnythingPaused()
+    {
+        for(SoundEffectVolumeManager manager: cache.values())
+        {
+            if(manager.playbackId==0 && manager.pausedVolumeF>0)
+                return true;
+        }
+        return false;
+    }
+
+    /** The volume percentage (0-100) a SeekBar bound to this persistKey should currently display. */
+    public static int getVolumePercent(String persistKey)
+    {
+        SoundEffectVolumeManager manager = lookup(persistKey);
+        if(manager==null || manager.playbackId==0)
+            return 0;
+        return Math.round(manager.volumeF*100);
     }
 
     public static void abortFadeout() {
@@ -86,6 +167,20 @@ public class SoundEffectVolumeManager implements SeekBar.OnSeekBarChangeListener
         }
     }
 
+    private boolean startPlayback(float atVolume) {
+        for(int i=0; i<10; i++) {
+            playbackId = soundPool.play(soundPoolIndex, atVolume, atVolume, 1, -1, 1f);
+            if(playbackId!=0) {
+                volumeF=atVolume;
+                onPlayCallback.run();
+                EVER_PLAYED=true;
+                return true;
+            }
+            Util.sleep(500);
+        }
+        return false;
+    }
+
     @Override
     public void onProgressChanged(SeekBar seekBar, int volume, boolean z) {
         abortFadeout();
@@ -93,22 +188,18 @@ public class SoundEffectVolumeManager implements SeekBar.OnSeekBarChangeListener
         volumeF=volume/100f;
         if(playbackId==0) {
             if (volume != 0) {
-                for(int i=0; i<10; i++) {
-                    playbackId = soundPool.play(soundPoolIndex, volumeF, volumeF, 1, -1, 1f);
-                    if(playbackId!=0) {
-                        onPlayCallback.run();
-                        EVER_PLAYED=true;
-                        return;
-                    }
-                    Util.sleep(500);
+                if(startPlayback(volumeF)) {
+                    PlaybackService.sync(StaticContext.getAppContext());
                 }
-
-                seekBar.setProgress(0);
+                else {
+                    seekBar.setProgress(0);
+                }
             }
         }
         else if(volume==0) {
             soundPool.stop(playbackId);
             playbackId=0;
+            PlaybackService.sync(StaticContext.getAppContext());
         }
         else {
             soundPool.setVolume(playbackId, volumeF, volumeF);
@@ -175,11 +266,13 @@ public class SoundEffectVolumeManager implements SeekBar.OnSeekBarChangeListener
             for(SoundEffectVolumeManager manager: cache.values())
             {
                 if(manager.playbackId!=0) {
+                    manager.pausedVolumeF=manager.fadeStart;
                     soundPool.stop(manager.playbackId);
                     manager.playbackId = 0;
                 }
             }
 
+            PlaybackService.sync(context);
             context.sendBroadcast(afterFadeout);
         }
     }

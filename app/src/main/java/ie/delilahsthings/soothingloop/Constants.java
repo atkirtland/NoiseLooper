@@ -1,7 +1,6 @@
 package ie.delilahsthings.soothingloop;
 
 public abstract class Constants {
-    public final static String ANY_PLAYING="any_playing";
     public final static String APP_SETTINGS = "app_settings";
     public final static String CUSTOM_NOISE_PREFIX = "custom_";
     public final static String DISABLE_PROBLEM_SOUNDS = "hide_problem_sounds";
@@ -16,6 +15,7 @@ public abstract class Constants {
     public final static String PRE_1DOT3_PROFILE_MIGRATION_COMPLETE = "1.2_to_1.3_profile_migration_complete";
     public final static String NOISE_TO_REMOVE = "noise_to_remove";
     public static final int ONE_MEGABYTE = 1024*1024;
+    public static final String PLAYBACK_STATE_CHANGED = "ie.delilahsthings.soothingloop.playback_state_changed";
     public static final String REMAINING_TIME = "remaining_time";
     public static final String RESTORE_VOLUMES = "restore_volumes";
     public final static String TIMER_EVENT = "ie.delilahsthings.soothingloop.timer_event";
