@@ -79,6 +79,7 @@ public class MainActivity extends AppCompatActivity {
         SoundEffectVolumeManager.setOnPlayCallback(this::onPlaySounds);
         populateNoiselist();
         populateCustomNoiselist();
+        syncSeekBarsToManagerState();
 
         registerBroadcastReceivers();
 
